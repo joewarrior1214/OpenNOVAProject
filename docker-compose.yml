@@ -1,0 +1,114 @@
+# Nova Syntheia — Constitutional Multi-Agent Polity
+# Docker Compose deployment — microservices per constitutional branch.
+#
+# Services map directly to constitutional institutions:
+#   postgres        → National Ledger store (Art. VIII)
+#   chromadb        → Constitutional citation vector DB
+#   dashboard       → Human Founder web interface
+#   orchestrator    → LangGraph orchestrator (session management)
+#   ledger-worker   → Ledger Custodian Agent (Art. VIII §5)
+#   portfolio-worker→ Portfolio Executive Agent (Art. V)
+#   judicial-worker → Policy Evaluation Agent (Art. V §2)
+#   fed-worker      → Monetary Policy Agent (Art. IX)
+
+x-common-env: &common-env
+  POSTGRES_USER: ${POSTGRES_USER:-nova_syntheia}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-production}
+  POSTGRES_DB: ${POSTGRES_DB:-national_ledger}
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  CHROMA_HOST: chromadb
+  CHROMA_PORT: "8000"
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  ALPACA_API_KEY: ${ALPACA_API_KEY:-}
+  ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY:-}
+  ALPACA_BASE_URL: ${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
+  FOUNDING_ERA: "true"
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_FORMAT: json
+
+services:
+  # ── Infrastructure ──────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nova_syntheia}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-production}
+      POSTGRES_DB: ${POSTGRES_DB:-national_ledger}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nova_syntheia}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  chromadb:
+    image: chromadb/chroma:0.5.23
+    ports:
+      - "8100:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      ANONYMIZED_TELEMETRY: "false"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── Dashboard (Human Founder Interface) ─────────────────
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      uvicorn nova_syntheia.dashboard.app:app
+      --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      <<: *common-env
+      DASHBOARD_HOST: "0.0.0.0"
+      DASHBOARD_PORT: "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Orchestrator (LangGraph Session Manager) ────────────
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      python -m nova_syntheia.orchestrator
+    environment:
+      <<: *common-env
+      EXECUTIVE_MODEL: ${EXECUTIVE_MODEL:-openai/gpt-4o}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Agent workers are managed in-process by the orchestrator ──
+  # During the Founding Era (Art. X), all agents run within the
+  # orchestrator for simplicity. They can be separated into
+  # individual containers when the polity scales to Standard Era.
+
+volumes:
+  pg_data:
+  chroma_data:
